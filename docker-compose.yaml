@@ -1,0 +1,34 @@
+version: '3'
+
+services:
+  tester:
+    build: .
+    links:
+      - kafka
+      - zookeeper
+      - suricata
+    volumes:
+      - .:/mount
+      - .:/pcaps
+    command: cargo test
+
+  suricata:
+    build: docker/suricata
+    volumes:
+      - .:/pcaps
+
+  kafka:
+    build: docker/kafka
+    logging:
+      driver: none  # Hide output
+    expose:
+      - "9092"
+    links:
+      - zookeeper
+
+  zookeeper:
+    build: docker/zookeeper
+    logging:
+      driver: none  # Hide output
+    expose:
+      - "2181"
