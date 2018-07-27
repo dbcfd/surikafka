@@ -1,4 +1,6 @@
-use super::errors::Error;
+use super::errors::{
+    Error
+};
 use super::futures::{
     Async,
     Future,
@@ -50,9 +52,9 @@ impl<C, K, S> Writer<C, K, S>
 
     pub fn send(&mut self, msg: &String) -> DeliveryFuture {
         let key = self.generator.generate(msg);
-        let record: FutureRecord<K::Item, String> = FutureRecord::to(self.topic.as_ref());
-        record.key(&key);
-        record.payload(&msg);
+        let record: FutureRecord<K::Item, String> = FutureRecord::to(self.topic.as_ref())
+            .key(&key)
+            .payload(&msg);
         self.producer.send(record, 1000)
     }
 }
@@ -69,6 +71,21 @@ pub trait WithProduce<S> where S: Stream<Item=String, Error=Error> {
               K::Item: Sized;
 }
 
+impl<S> WithProduce<S> for S where S: Stream<Item=String, Error=Error> {
+    fn produce<C, K>(
+        self,
+        topic: String,
+        generator: K,
+        producer: FutureProducer<C>
+    ) -> Writer<C, K, S>
+        where C: ClientContext + 'static,
+              K: KeyGenerator,
+              K::Item: Sized
+    {
+        Writer::new(self, topic, generator, producer)
+    }
+}
+
 impl<C, K, S> Stream for Writer<C, K, S>
     where C: ClientContext + 'static,
           K: KeyGenerator,
@@ -79,10 +96,10 @@ impl<C, K, S> Stream for Writer<C, K, S>
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
-        let outstanding_ready: Poll<Option<(i32, i64)>, Error> = if let Some(f) = self.outstanding.take() {
+        let outstanding_ready: Poll<Option<(i32, i64)>, Error> = if let Some(mut f) = self.outstanding.take() {
             let produce_attempt = try_ready!(f.poll());
             match produce_attempt {
-                Err( (e, msg) ) => {
+                Err( (e, _) ) => {
                     error!("Failed to produce: {:?}", e);
                     Ok(Async::NotReady)
                 }
@@ -98,6 +115,7 @@ impl<C, K, S> Stream for Writer<C, K, S>
             debug!("Produced to partition {}, offset {}", p, o);
             Ok(Async::Ready(Some(())))
         } else {
+            trace!("Polling for next future");
             if let Some(msg) = try_ready!(self.inner.poll()) {
                 self.outstanding = Some(self.send(&msg));
                 Ok(Async::NotReady)
@@ -113,11 +131,12 @@ mod tests {
     use super::*;
     use self::super::super::{
         key::StringKeyGenerator,
+        env_logger,
+        errors::ErrorKind,
         futures::{
             Sink,
             sync::mpsc as mpsc
         },
-        rdkafka,
         rdkafka::{
             ClientConfig
         },
@@ -125,47 +144,50 @@ mod tests {
     };
     use std;
 
-    impl WithProduce<mpsc::Receiver<String>> for mpsc::Receiver<String> {
-        fn produce<C, K>(
-            self,
-            topic: String,
-            generator: K,
-            producer: rdkafka::producer::FutureProducer<C>
-        ) -> Writer<C, K, S>
-            where C: rdkafka::ClientContext + 'static,
-                  K: KeyGenerator,
-                  K::Item: Sized
-        {
-            Writer::new(self, topic, generator, producer)
-        }
-    }
-
     #[test]
     fn produces_messages() {
+        let _ = env_logger::try_init();
+
         let mut rt = tokio::runtime::Runtime::new().expect("Failed to build runtime");
 
-        let (mut sender, receiver) = mpsc::channel::<String>(100);
+        let (sender, receiver) = mpsc::channel::<String>(100);
 
         let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", "localhost:9092")
+            .set("bootstrap.servers", "127.0.0.1:9092")
             .set("produce.offset.report", "true")
             .set("message.timeout.ms", "5000")
             .create()
             .expect("Producer creation error");
 
-        let fut_result = receiver
+        let send_finished = std::thread::spawn(move || {
+            info!("Attempting to send items for publish");
+
+            let mut post_send = sender.send("string1".to_string()).wait().expect("Failed to send")
+                .send("string2".to_string()).wait().expect("Failed to send")
+                .send("string3".to_string()).wait().expect("Failed to send");
+
+            info!("Stopping sender");
+
+            std::thread::sleep(std::time::Duration::from_secs(5));
+
+            post_send.close().expect("Failed to close")
+        });
+
+        std::thread::sleep(std::time::Duration::from_secs(5));
+
+        info!("Creating receiver future");
+
+        let fut_result = receiver.map_err(|_| {
+            error!("Error encountered while running receiver");
+            Error::from_kind(ErrorKind::ReceiverError)
+        })
             .produce("test_topic".to_string(), StringKeyGenerator, producer)
             .collect();
-
-        let send_finished = std::thread::spawn(move || {
-            sender.send("string1".to_string());
-            sender.send("string2".to_string());
-            sender.send("string3".to_string());
-            sender.close()
-        });
 
         let sent = rt.block_on(fut_result).expect("Failed to send");
 
         assert_eq!(sent.len(), 3);
+
+        send_finished.join().expect("Failed to join");
     }
 }

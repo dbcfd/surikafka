@@ -1,28 +1,31 @@
-version: '3'
+version: '3.2'
 
 services:
-  tester:
-    build: .
-    links:
-      - kafka
-      - zookeeper
-      - suricata
-    volumes:
-      - .:/mount
-      - .:/pcaps
-    command: cargo test
+#  tester:
+#    build: .
+#    links:
+#      - kafka
+#      - zookeeper
+#      - suricata
+#    volumes:
+#      - .:/mount
+#      - .:/pcaps
+#    command: cargo test
 
-  suricata:
-    build: docker/suricata
-    volumes:
-      - .:/pcaps
+#  suricata:
+#    build: docker/suricata
+#    volumes:
+#      - .:/pcaps
 
   kafka:
     build: docker/kafka
     logging:
       driver: none  # Hide output
-    expose:
-      - "9092"
+    ports:
+      - target: 9092
+        published: 9092
+        protocol: tcp
+        mode: host
     links:
       - zookeeper
 

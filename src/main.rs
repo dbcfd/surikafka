@@ -28,9 +28,11 @@ pub mod errors {
 //        links {
 //            ErrorName(error_lib::errors::Error, error_lib::errors::ErrorKind);
 //        }
-//        errors {
-//
-//        }
+        errors {
+            ReceiverError {
+                display("Receiver encountered an error")
+            }
+        }
     }
 }
 
@@ -40,9 +42,9 @@ mod writer;
 
 #[derive(Debug, StructOpt, Clone)]
 pub struct CommandLineArguments {
-    #[structopt(long = "eve", short = "e", default_value="/tmp/suricata/alert.socket")]
+    #[structopt(long = "eve", short = "e", default_value="/tmp/suricata.alerts")]
     eve_socket_path: String,
-    #[structopt(long = "kafka", short = "k", default_value="staging-kafka-001:2181,staging-kafka-002:2181")]
+    #[structopt(long = "kafka", short = "k", default_value="127.0.0.1:9092")]
     kafka_servers: String,
     #[structopt(long = "topic", short = "t", default_value="eve-alerts")]
     topic: String
@@ -70,21 +72,6 @@ fn print_error(err: &Error) {
     }
 }
 
-impl<S> writer::WithProduce<S> for S where S: Stream<Item=String, Error=Error> {
-    fn produce<C, K>(
-        self,
-        topic: String,
-        generator: K,
-        producer: rdkafka::producer::FutureProducer<C>
-    ) -> writer::Writer<C, K, S>
-        where C: rdkafka::ClientContext + 'static,
-              K: key::KeyGenerator,
-              K::Item: Sized
-    {
-        writer::Writer::new(self, topic, generator, producer)
-    }
-}
-
 fn run_main(args: CommandLineArguments) -> Result<(), Error> {
     let mut rt = tokio::runtime::Runtime::new().map_err(Error::from)?;
 
@@ -97,10 +84,15 @@ fn run_main(args: CommandLineArguments) -> Result<(), Error> {
 
     let uds_path = std::path::PathBuf::from(args.eve_socket_path);
 
+    if uds_path.exists() {
+        std::fs::remove_file(uds_path.clone()).map_err(Error::from)?
+    }
+
     let listener = tokio_uds::UnixListener::bind(uds_path).map_err(Error::from)?;
 
     let stream_res = listener.incoming()
         .map(|s| {
+            debug!("Stream connected at {:?}", s.peer_addr());
             reader::EveReader::new(s)
         }).flatten()
         .produce(args.topic.clone(), key::StringKeyGenerator, producer)

@@ -12,3 +12,5 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nightly
 ENV PATH /root/.cargo/bin/:$PATH
 
 WORKDIR /surikafka
+ADD /src src
+ADD /Cargo.toml .
