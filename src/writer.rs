@@ -75,6 +75,7 @@ impl<C, K, S> Writer<C, K, S>
             trace!("Checking outstanding future");
             match outstanding.future_produce.poll()? {
                 Async::NotReady => {
+                    debug!("Not ready, will poll later");
                     self.outstanding = Some(outstanding);
                     Ok(Async::NotReady)
                 }

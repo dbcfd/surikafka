@@ -77,7 +77,7 @@ mod writer;
 pub struct CommandLineArguments {
     #[structopt(long = "eve", short = "e", default_value="/tmp/suricata.alerts")]
     eve_socket_path: String,
-    #[structopt(long = "kafka", short = "k", default_value="127.0.0.1:9092")]
+    #[structopt(long = "kafka", short = "k", default_value="kafka:9092")]
     kafka_servers: String,
     #[structopt(long = "topic", short = "t", default_value="eve-alerts")]
     topic: String
