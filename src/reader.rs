@@ -1,75 +1,64 @@
-use super::bytes;
-use super::errors::Error;
-use super::futures::{
-    Async,
-    Poll,
-    Stream
+use super::{
+    bytes,
+    errors::Error,
+    futures::{
+        Async,
+        Poll,
+        Stream
+    },
+    json,
+    //nom,
+    //json::JsonValue,
+    tokio::io::AsyncRead
 };
-use super::tokio::io::AsyncRead;
 
 pub struct EveReader<T: AsyncRead> {
     inner: T,
-    buffer: bytes::BytesMut
+    buffer: bytes::BytesMut,
+    pending_alerts: Vec<Vec<u8>>
 }
 
 impl<T: AsyncRead> EveReader<T> {
     pub fn new(inner: T) -> EveReader<T> {
         EveReader {
             inner: inner,
-            buffer: bytes::BytesMut::with_capacity(10_000_000)
+            buffer: bytes::BytesMut::with_capacity(10_000_000),
+            pending_alerts: vec![]
         }
+    }
+
+    pub fn collect_alerts(&mut self) -> Result<(), Error> {
+        let (rem, mut alerts) = json::JsonParser::parse(self.buffer.as_ref())?;
+
+        self.pending_alerts.append(&mut alerts);
+        self.buffer.split_at(self.buffer.len() - rem.len());
+
+        Ok( () )
     }
 }
 
-const EOL: u8 = '\n' as u8;
-const END_PAREN: u8 = '}' as u8;
-
 impl<T: AsyncRead> Stream for EveReader<T> {
-    type Item = String;
+    type Item = Vec<u8>;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Error> {
-        let bytes_read = try_ready!(self.inner.read_buf(&mut self.buffer));
-
-        if bytes_read == 0 && self.buffer.is_empty() {
-            debug!("No bytes read, eve stream complete");
-            Ok(Async::Ready(None))
+        if let Some(v) = self.pending_alerts.pop() {
+            Ok(Async::Ready(Some(v)))
         } else {
-            debug!("Checking buffer after reading {} bytes", bytes_read);
+            let bytes_read = try_ready!(self.inner.read_buf(&mut self.buffer));
 
-            let mut located_at = None;
-
-            for idx in 0..self.buffer.len() {
-                if let Some(_) = located_at {
-                    if self.buffer[idx] == EOL {
-                        trace!("Located eol at {}", idx);
-                        located_at = Some(idx);
-                        break;
-                    } else {
-                        trace!("Expected eol, but none seen");
-                        located_at = None;
-                    }
-                } else {
-                    if self.buffer[idx] == END_PAREN {
-                        trace!("Located end parentheses at {}", idx);
-                        located_at = Some(idx);
-                    }
-                }
-            }
-
-            if let Some(at) = located_at {
-                debug!("Splitting buffer at {}", at);
-                let mut to_send = self.buffer.split_to(at + 1);
-                to_send.truncate(at);
-                let to_send_str = String::from_utf8(to_send.to_vec())?;
-                debug!("Sending {}", to_send_str);
-                Ok(Async::Ready(Some(to_send_str)))
-            } else if bytes_read == 0 {
-                debug!("Did not locate a string, and no bytes were read, completing");
+            if bytes_read == 0 {
                 Ok(Async::Ready(None))
             } else {
-                debug!("No string located");
-                Ok(Async::NotReady)
+                debug!("Checking buffer after reading {} bytes", bytes_read);
+
+                self.collect_alerts()?;
+
+                if let Some(v) = self.pending_alerts.pop() {
+                    Ok(Async::Ready(Some(v)))
+                } else {
+                    Ok(Async::Ready(None))
+                }
             }
         }
     }
@@ -131,7 +120,6 @@ mod tests {
                         }
                     }
                     Async::Ready(Some(b)) => {
-                        trace!("Writing {} to buffer at {}", (b as char), bytes_written);
                         buf[bytes_written] = b;
                         bytes_written += 1;
                         if bytes_written == buf.len() {
@@ -162,17 +150,17 @@ mod tests {
 
         let send_complete = std::thread::spawn(move || {
             let init: Box<Future<Item=mpsc::Sender<u8>, Error=mpsc::SendError<u8>>> = Box::new(futures::finished(sender));
-            let s1 = "{\"key1\":\"key with a return \n\",\"key2\":123".as_bytes().iter().fold(init, |s, b| {
+            let s1 = "{\"key1\":\"key with a paren set {}\",\"key2\":123".as_bytes().iter().fold(init, |s, b| {
                 let byte = b.clone();
                 Box::new(s.and_then(move |send| {
                     send.send(byte)
                 }))
             });
-            let s2 = "45}\n{\"another\":\"part ".as_bytes().iter().fold(s1, |s, b| {
+            let s2 = "45}{\"another\":\"part ".as_bytes().iter().fold(s1, |s, b| {
                 let byte = b.clone();
                 Box::new(s.and_then(move |send| send.send(byte)))
             });
-            let f = "being sent\"}\n".as_bytes().iter().fold(s2, |s, b| {
+            let f = "being sent\"}".as_bytes().iter().fold(s2, |s, b| {
                 let byte = b.clone();
                 Box::new(s.and_then(move |send| send.send(byte)))
             });
@@ -186,9 +174,13 @@ mod tests {
 
         let strings = rt.block_on(fut_strings).expect("Failed to receive strings");
 
+        strings.iter().for_each(|s| {
+            debug!("Received {:?}", String::from_utf8(s.to_vec()));
+        });
+
         assert_eq!(strings, vec![
-            "{\"key1\":\"key with a return \n\",\"key2\":12345}".to_string(),
-            "{\"another\":\"part being sent\"}".to_string()
+            "{\"another\":\"part being sent\"}".to_string().into_bytes(),
+            "{\"key1\":\"key with a paren set {}\",\"key2\":12345}".to_string().into_bytes()
         ]);
 
         send_complete.join().expect("Failed to send");
@@ -205,12 +197,11 @@ mod tests {
             inner: receiver
         };
 
-        let fut_strings = EveReader::new(eve_receiver)
-            .collect();
+        let fut_strings = EveReader::new(eve_receiver).collect();
 
         let send_complete = std::thread::spawn(move || {
             let init: Box<Future<Item=mpsc::Sender<u8>, Error=mpsc::SendError<u8>>> = Box::new(futures::finished(sender));
-            let f = "{\"key1\":\"key without a return\"}\n".as_bytes().iter().fold(init, |s, b| {
+            let f = "{\"key1\":\"key without a return\"}".as_bytes().iter().fold(init, |s, b| {
                 let byte = b.clone();
                 Box::new(s.and_then(move |send| {
                     send.send(byte)
@@ -227,7 +218,7 @@ mod tests {
         let strings = rt.block_on(fut_strings).expect("Failed to receive strings");
 
         assert_eq!(strings, vec![
-            "{\"key1\":\"key without a return\"}".to_string()
+            "{\"key1\":\"key without a return\"}".to_string().into_bytes()
         ]);
 
         send_complete.join().expect("Failed to send");

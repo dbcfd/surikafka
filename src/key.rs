@@ -3,15 +3,15 @@ use super::rdkafka::message::ToBytes;
 pub trait KeyGenerator {
     type Item: ToBytes + ?Sized;
 
-    fn generate(&self, msg: &String) -> Self::Item;
+    fn generate(&self, msg: &Vec<u8>) -> Self::Item;
 }
 
-pub struct StringKeyGenerator;
+pub struct BytesGenerator;
 
-impl KeyGenerator for StringKeyGenerator {
-    type Item = String;
+impl KeyGenerator for BytesGenerator {
+    type Item = Vec<u8>;
 
-    fn generate(&self, msg: &String) -> Self::Item {
+    fn generate(&self, msg: &Vec<u8>) -> Self::Item {
         msg.clone()
     }
 }
@@ -22,6 +22,6 @@ mod tests {
 
     #[test]
     fn string_generator() {
-        assert_eq!(StringKeyGenerator.generate(&"test".to_string()), "test".to_string());
+        assert_eq!(BytesGenerator.generate(&"test".to_string().into_bytes()), "test".to_string().into_bytes());
     }
 }

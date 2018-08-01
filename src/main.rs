@@ -6,6 +6,9 @@ extern crate env_logger;
 #[macro_use] extern crate error_chain;
 #[macro_use] extern crate futures;
 #[macro_use(debug, info, error, log, trace, warn)] extern crate log;
+//#[macro_use] extern crate nom;
+extern crate serde;
+extern crate serde_json;
 extern crate rdkafka;
 #[macro_use] extern crate structopt;
 extern crate tokio;
@@ -13,17 +16,20 @@ extern crate tokio_uds;
 
 pub mod errors {
     use std;
-    use super::futures;
+    use super::{
+        futures,
+        //nom
+    };
 
     // Create the Error, ErrorKind, ResultExt, and Result types
     error_chain! {
         foreign_links {
+            Canceled(futures::Canceled) #[doc = "Future cancelled"];
             Io(std::io::Error) #[doc = "Error during IO"];
             Ffi(std::ffi::NulError) #[doc = "Error during FFI conversion"];
-            Utf8(std::str::Utf8Error) #[doc = "Error during UTF8 conversion"];
             FromUtf8(std::string::FromUtf8Error) #[doc = "Error during UTF8 conversion"];
             TimeError(std::time::SystemTimeError) #[doc = "Error during duration calculation"];
-            Canceled(futures::Canceled) #[doc = "Future cancelled"];
+            Utf8(std::str::Utf8Error) #[doc = "Error during UTF8 conversion"];
         }
 //        links {
 //            ErrorName(error_lib::errors::Error, error_lib::errors::ErrorKind);
@@ -32,12 +38,39 @@ pub mod errors {
             ReceiverError {
                 display("Receiver encountered an error")
             }
+            NomIncomplete(needed: String) {
+                display("Not enough data to parse, needed {}", needed)
+            }
+            NomError(message: String) {
+                display("Error parsing: {}", message)
+            }
         }
     }
+
+//    impl<I, E> From<nom::Err<I, E>> for Error {
+//        fn from(err: nom::Err<I, E>) -> Error {
+//            match err {
+//                nom::Err::Incomplete(super::nom::Needed::Unknown) => {
+//                    Error::from_kind(ErrorKind::NomIncomplete("Unknown".to_string()))
+//                }
+//                nom::Err::Incomplete(super::nom::Needed::Size(sz)) => {
+//                    Error::from_kind(ErrorKind::NomIncomplete(format!("{}", sz)))
+//                }
+//                nom::Err::Error(super::nom::simple_errors::Context::Code(_, k)) => {
+//                    Error::from_kind(ErrorKind::NomError(k.description().to_string()))
+//                }
+//                nom::Err::Failure(super::nom::simple_errors::Context::Code(_, k)) => {
+//                    Error::from_kind(ErrorKind::NomError(k.description().to_string()))
+//                }
+//            }
+//        }
+//    }
 }
 
+mod json;
 mod key;
 mod reader;
+mod stats;
 mod writer;
 
 #[derive(Debug, StructOpt, Clone)]
@@ -91,14 +124,18 @@ fn run_main(args: CommandLineArguments) -> Result<(), Error> {
     let listener = tokio_uds::UnixListener::bind(uds_path).map_err(Error::from)?;
 
     let stream_res = listener.incoming()
+        .map_err(Error::from)
         .map(|s| {
             debug!("Stream connected at {:?}", s.peer_addr());
             reader::EveReader::new(s)
         }).flatten()
-        .produce(args.topic.clone(), key::StringKeyGenerator, producer)
-        .for_each(|_| {
-            Ok(())
-        });
+        .produce(
+            args.topic.clone(),
+            key::BytesGenerator,
+            producer
+        ).for_each(|_| {
+        Ok(())
+    });
 
     let res = rt.block_on(stream_res)?;
 

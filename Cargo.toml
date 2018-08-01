@@ -10,6 +10,8 @@ error-chain = "~0.12"
 futures = "~0.1"
 log = "~0.4"
 rdkafka = "~0.17"
+serde = "~1.0"
+serde_json = "~1.0"
 shutdown = { git = "https://github.com/dbcfd/rs-shutdown.git" }
 structopt = "~0.2"
 tokio = "~0.1"

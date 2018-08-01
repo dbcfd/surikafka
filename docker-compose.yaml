@@ -1,16 +1,16 @@
 version: '3.2'
 
 services:
-#  tester:
-#    build: .
-#    links:
-#      - kafka
-#      - zookeeper
+  tester:
+    build: .
+    links:
+      - kafka
+      - zookeeper
 #      - suricata
 #    volumes:
 #      - .:/mount
 #      - .:/pcaps
-#    command: cargo test
+    command: cargo test
 
 #  suricata:
 #    build: docker/suricata
@@ -21,11 +21,8 @@ services:
     build: docker/kafka
     logging:
       driver: none  # Hide output
-    ports:
-      - target: 9092
-        published: 9092
-        protocol: tcp
-        mode: host
+    expose:
+     - "9092"
     links:
       - zookeeper
 
